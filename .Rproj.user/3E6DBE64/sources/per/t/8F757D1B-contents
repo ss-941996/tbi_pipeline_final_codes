@@ -1,0 +1,391 @@
+# ============================================================================
+# 01_data_cleaning_and_preprocessing.R
+# ============================================================================
+# Purpose: Complete data preprocessing pipeline for TBI functional outcome prediction
+# - Load raw TBIMS Form 1 & 2 data
+# - Calculate FIM_change target variable (1-year improvement)
+# - Clean missing value codes
+# - Remove discharge scores and temporal leakage variables
+# - Generate data quality reports
+# - Save cleaned dataset for Python modeling
+#
+# Author: Saumya Sharma
+# Date: 17-11-2025
+# Input: Raw TBIMS CSV files (Form 1 & Form 2)
+# Output: cleaned_data_for_modeling.csv
+# ============================================================================
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(moments)
+library(here)
+here::i_am("scripts/r_code/finrcode17nov.R")
+cat("============================================\n")
+cat("TBI Data Cleaning & Preprocessing Pipeline\n")
+cat("============================================\n\n")
+
+# ============================================================================
+# STEP 1: Load Raw Data
+# ============================================================================
+cat("STEP 1: Loading raw datasets...\n")
+
+ndsc1 <- read_csv(here("data/raw/TBIMSForm1_Public_20250812.csv"))
+ndsc2 <- read_csv(here("data/raw/TBIMSForm2_Public_20250812.csv"))
+
+cat("  Form 1 shape:", nrow(ndsc1), "rows ×", ncol(ndsc1), "columns\n")
+cat("  Form 2 shape:", nrow(ndsc2), "rows ×", ncol(ndsc2), "columns\n\n")
+
+# ============================================================================
+# STEP 2: Create FIM_change Target Variable
+# ============================================================================
+# Rationale: FIM_change measures functional improvement from discharge to 1-year
+# - FIMTOTD = FIM total at discharge (baseline)
+# - FIMTOTF = FIM total at follow-up (1-year, FollowUpPeriod==1)
+# - Valid FIM range: 18-126 (per TBIMS documentation)
+# - Positive FIM_change = improvement; Negative = decline
+# ============================================================================
+cat("STEP 2: Creating FIM_change target variable...\n")
+
+# Get baseline FIM (discharge from Form 1)
+fimtotd <- ndsc1 %>%
+  filter(FIMTOTD >= 18, FIMTOTD <= 126) %>%
+  select(Mod1Id, FIMTOTD)
+
+# Get 1-year follow-up FIM (from Form 2)
+fimtotf_1yr <- ndsc2 %>%
+  filter(FollowUpPeriod == 1, FIMTOTF >= 18, FIMTOTF <= 126) %>%
+  select(Mod1Id, FIMTOTF)
+
+# Calculate FIM_change (improvement from discharge to 1-year)
+fim_delta <- fimtotd %>%
+  inner_join(fimtotf_1yr, by = "Mod1Id") %>%
+  mutate(FIM_change = FIMTOTF - FIMTOTD) %>%
+  select(Mod1Id, FIMTOTD, FIMTOTF, FIM_change)
+
+cat("  FIM_change created for", nrow(fim_delta), "patients\n")
+cat("  FIM_change range:", min(fim_delta$FIM_change), "to", max(fim_delta$FIM_change), "\n")
+cat("  Mean FIM_change:", round(mean(fim_delta$FIM_change), 2), "\n\n")
+
+# ============================================================================
+# STEP 2.1: Target Variable Diagnostics
+# ============================================================================
+cat("STEP 2.1: Running diagnostics on FIM_change...\n")
+
+fim_change_clean <- fim_delta %>% 
+  filter(!is.na(FIM_change))
+
+# Create output directory for figures if it doesn't exist
+dir.create(here("output", "figures"), showWarnings = FALSE, recursive = TRUE)
+
+# Histogram
+hist_plot <- ggplot(fim_change_clean, aes(x = FIM_change)) +
+  geom_histogram(bins = 40, fill = "skyblue", color = "black") +
+  geom_vline(aes(xintercept = mean(FIM_change)), color = "red", linetype = "dashed", linewidth = 1) +
+  labs(
+    title = "Distribution of FIM Change (Post-Discharge to 1-Year)",
+    x = "FIM Change (FIMTOTF - FIMTOTD)", 
+    y = "Count"
+  ) +
+  theme_classic()  # clean white background
+
+ggsave(here("output", "figures", "01_fim_change_histogram.png"), hist_plot, width = 8, height = 6)
+
+# QQ Plot
+qq_plot <- ggplot(fim_change_clean, aes(sample = FIM_change)) +
+  stat_qq() +
+  stat_qq_line(color = "red", linewidth = 1) +
+  labs(title = "Q-Q Plot of FIM Change") +
+  theme_minimal()+  theme(
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+ggsave(here("output", "figures", "02_fim_change_qqplot.png"), qq_plot, width = 8, height = 6)
+
+# Scatter plot for homoscedasticity check
+scatter_plot <- ggplot(fim_change_clean, aes(x = FIMTOTD, y = FIM_change)) +
+  geom_point(alpha = 0.5, color = "black") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(title = "FIM Change vs. FIM at Discharge (Variance Check)",
+       x = "FIM at Discharge (FIMTOTD)",
+       y = "FIM Change") +
+  theme_minimal(base_family = "Arial") +
+  theme(
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+
+ggsave(here("output", "figures", "03_fim_change_scatter.png"), scatter_plot, width = 8, height = 6)
+
+# Skewness and Kurtosis
+cat("  Normality checks:\n")
+skew <- skewness(fim_change_clean$FIM_change, na.rm = TRUE)
+kurt <- kurtosis(fim_change_clean$FIM_change, na.rm = TRUE)
+
+cat("    Skewness:", round(skew, 3), "\n")
+cat("    Excess Kurtosis:", round(kurt - 3, 3), "\n")
+
+if (abs(skew) < 0.5 & abs(kurt - 3) < 1) {
+  cat("  ✓ FIM_change is approximately normal\n\n")
+} else {
+  cat("  ⚠ FIM_change deviates from normality - tree-based models recommended\n\n")
+}
+
+# ============================================================================
+# STEP 3: Clean Missing Value Codes (Phase 1 - Global)
+# ============================================================================
+# Rationale: TBIMS uses special codes for missing data:
+# - 66, 77, 88, 99 (and variations) = Unknown/Refused/Not applicable
+# - 666, 777, 888, 999 = Unknown/Refused/Not applicable
+# - 6666, 7777, 8888, 9999 = Unknown/Refused/Not applicable
+# These should be treated as NA for modeling
+# ============================================================================
+cat("STEP 3: Cleaning missing value codes (Phase 1 - Global)...\n")
+
+clean_missing_codes <- function(x) {
+  if (is.numeric(x)) {
+    x <- ifelse(x %in% c(66, 77, 81, 82, 83, 88, 99), NA, x)
+    x <- ifelse(x %in% c(666, 777, 888, 999), NA, x)
+    x <- ifelse(x %in% c(6666, 7777, 8888, 9999), NA, x)
+  }
+  return(x)
+}
+
+ndsc1_clean <- ndsc1 %>%
+  mutate(across(-Mod1Id, clean_missing_codes))
+
+cat("  Global missing codes converted to NA\n\n")
+
+# ============================================================================
+# STEP 4: Remove Discharge Scores and Temporal Leakage Variables
+# ============================================================================
+# Rationale: Remove variables that would not be available at prediction time
+# or that contain information from the target period:
+# - All FIM scores ending with 'D' (discharge) - these are used in target calculation
+# - All DRS scores ending with 'D' (discharge) - temporal leakage
+# ============================================================================
+cat("STEP 4: Removing discharge scores and leakage variables...\n")
+
+# Find all FIM and DRS variables ending with 'D'
+fim_d_vars <- grep("FIM.*D$", names(ndsc1_clean), value = TRUE, ignore.case = TRUE)
+drs_d_vars <- grep("DRS.*D$", names(ndsc1_clean), value = TRUE, ignore.case = TRUE)
+exclude_vars <- c(fim_d_vars, drs_d_vars)
+
+# Keep only variables that exist in the dataset
+exclude_vars_actual <- exclude_vars[exclude_vars %in% names(ndsc1_clean)]
+
+cat("  Excluding", length(exclude_vars_actual), "discharge/leakage variables\n")
+cat("  Variables removed:", paste(head(exclude_vars_actual, 10), collapse = ", "), 
+    ifelse(length(exclude_vars_actual) > 10, "...", ""), "\n")
+
+# Drop these variables
+ndsc1_clean <- ndsc1_clean %>%
+  select(-any_of(exclude_vars_actual))
+
+cat("  Remaining features:", ncol(ndsc1_clean) - 1, "(excluding Mod1Id)\n\n")
+
+# ============================================================================
+# STEP 5: Merge Form 1 Features with FIM_change Target
+# ============================================================================
+cat("STEP 5: Merging features with target variable...\n")
+
+df_full <- ndsc1_clean %>%
+  inner_join(fim_delta %>% select(Mod1Id, FIM_change), by = "Mod1Id")
+
+cat("  Merged dataset:", nrow(df_full), "rows ×", ncol(df_full), "columns\n\n")
+
+# ============================================================================
+# STEP 6: Clean Missing Value Codes (Phase 2 - Specific Variables)
+# ============================================================================
+# Additional cleaning for specific variables that have unique missing codes
+# ============================================================================
+cat("STEP 6: Cleaning missing value codes (Phase 2 - Specific variables)...\n")
+gcs_vars <- names(df_full)[startsWith(names(df_full), "GCS")]
+df_full <- df_full %>%
+  mutate(
+    # FIM aggregate scores
+    FIMMOTA = ifelse(FIMMOTA %in% c(999), NA, FIMMOTA),
+    FIMCOGA = ifelse(FIMCOGA %in% c(999), NA, FIMCOGA),
+    FIMTOTA = ifelse(FIMTOTA %in% c(9999), NA, FIMTOTA),
+    
+    # Temporal variables (PTA, TFC, LOS, Days)
+    PTADays = ifelse(PTADays %in% c(8888, 9999), NA, PTADays),
+    TFCDays = ifelse(TFCDays %in% c(7777, 9999), NA, TFCDays),
+    LOSRehab = ifelse(LOSRehab %in% c(888, 999), NA, LOSRehab),
+    LOSRehabNoInt = ifelse(LOSRehabNoInt %in% c(888, 999), NA, LOSRehabNoInt),
+    LOSTot = ifelse(LOSTot %in% c(888, 999), NA, LOSTot),
+    
+    DAYStoREHABadm = ifelse(DAYStoREHABadm %in% c(8888, 9999), NA, DAYStoREHABadm),
+    DAYStoACUTEadm = ifelse(DAYStoACUTEadm %in% c(8888, 9999), NA, DAYStoACUTEadm),
+    
+    LOSAcute = ifelse(LOSAcute %in% c(888, 999), NA, LOSAcute),
+    
+    # Demographics
+    AGENoPHI = ifelse(AGENoPHI %in% c(777, 889, 999), NA, AGENoPHI),
+    
+  )%>%
+  # Clean all GCS variables in one go
+  mutate(across(all_of(gcs_vars), ~ ifelse(.x %in% c(77, 88, 999, 888, 88888), NA, .x)))
+
+cat("  Variable-specific missing codes converted to NA\n\n")
+
+# ============================================================================
+# STEP 7: Clean FIM "A" Variables (Admission Scores)
+# ============================================================================
+# FIM "A" variables should only contain values 1-7 (FIM scale)
+# Any value outside this range should be treated as missing
+# ============================================================================
+cat("STEP 7: Cleaning FIM admission (A) variables...\n")
+
+fim_a_vars <- c(
+  # Mobility
+  "FIMWalkingA", "FIMBedTransA", "FIMTubTransA", 
+  "FIMToilTransA", "FIMStairsA", "FIMwcA",
+  
+  # Self-care
+  "FIMFeedA", "FIMGroomA", "FIMBathA", 
+  "FIMDrsdwnA", "FIMToiletA",
+  
+  # Sphincter control
+  "FIMBladMgtA", "FIMBwlMgtA", "FIMBladAccA", 
+  "FIMBwlAccA", "FIMBladAsstA", "FIMBwlAsstA",
+  
+  # Communication
+  "FIMCompA", "FIMExpressA",
+  
+  # Social cognition
+  "FIMSocialA", "FIMProbSlvA", "FIMMemA"
+)
+
+# Keep only FIM A variables that exist in the dataset
+fim_a_vars_existing <- fim_a_vars[fim_a_vars %in% names(df_full)]
+
+df_full <- df_full %>%
+  mutate(across(all_of(fim_a_vars_existing), 
+                ~ ifelse(.x %in% 1:7, .x, NA)))
+
+cat("  Cleaned", length(fim_a_vars_existing), "FIM admission variables\n")
+cat("  Valid range enforced: 1-7\n\n")
+
+# ============================================================================
+# STEP 8: Remove Additional Leakage Variables
+# ============================================================================
+# Remove DRS discharge variables (low/high) if they exist
+# These are outcome measures that should not be used for prediction
+# ============================================================================
+cat("STEP 8: Removing additional leakage variables...\n")
+
+leakage_vars <- c("DRSdLow", "DRSdHigh", "DAYStoACUTEdc", "DAYStoREHABdc")
+leakage_vars_existing <- leakage_vars[leakage_vars %in% names(df_full)]
+
+if (length(leakage_vars_existing) > 0) {
+  df_full <- df_full %>% select(-any_of(leakage_vars_existing))
+  cat("  Removed:", paste(leakage_vars_existing, collapse = ", "), "\n\n")
+} else {
+  cat("  No additional leakage variables found\n\n")
+}
+
+# ============================================================================
+# STEP 9: Generate Data Quality Report
+# ============================================================================
+cat("STEP 9: Generating data quality report...\n")
+
+# Create output directory for tables if it doesn't exist
+dir.create(here("output", "tables"), showWarnings = FALSE, recursive = TRUE)
+
+missing_report <- df_full %>%
+  summarise(across(everything(), ~sum(is.na(.)) / n() * 100)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Pct_Missing") %>%
+  arrange(desc(Pct_Missing))
+
+# Summary statistics
+cat("\n=== DATA QUALITY SUMMARY ===\n")
+cat("Total variables:", nrow(missing_report), "\n")
+cat("Variables with >20% missing:", sum(missing_report$Pct_Missing > 20), "\n")
+cat("Variables with >50% missing:", sum(missing_report$Pct_Missing > 50), "\n")
+cat("Variables with >60% missing:", sum(missing_report$Pct_Missing > 60), "\n\n")
+
+# Show high missingness variables
+high_missing <- missing_report %>% filter(Pct_Missing > 50)
+if (nrow(high_missing) > 0) {
+  cat("Top variables with high missingness:\n")
+  print(head(high_missing, 20))
+  cat("\n")
+}
+
+# Save full missing data report
+write_csv(missing_report, here("output", "tables", "missing_data_report.csv"))
+cat("✓ Missing data report saved to output/tables/missing_data_report.csv\n\n")
+
+# ============================================================================
+# STEP 10: Drop High-Missingness Variables
+# ============================================================================
+# Remove variables with >60% missing data as they provide limited information
+# ============================================================================
+cat("STEP 10: Removing high-missingness variables...\n")
+
+vars_to_drop <- missing_report %>%
+  filter(Pct_Missing > 60) %>%
+  pull(Variable)
+
+df_filtered <- df_full %>%
+  select(-any_of(vars_to_drop))
+
+cat("  Dropped", length(vars_to_drop), "variables with >60% missing\n")
+cat("  Remaining columns:", ncol(df_filtered), "\n\n")
+
+# ============================================================================
+# STEP 11: Save Final Datasets
+# ============================================================================
+cat("STEP 11: Saving final datasets...\n")
+
+# Create processed data directory if it doesn't exist
+dir.create(here("data", "processed"), showWarnings = FALSE, recursive = TRUE)
+
+# Save cleaned dataset for Python modeling
+write_csv(df_filtered, here("data", "processed", "df17nov.csv"))
+cat("✓ Cleaned dataset saved: data/processed/df17nov.csv\n")
+
+# Save FIM delta reference (useful for analysis)
+write_csv(fim_delta, here("data", "processed", "fim_delta_reference.csv"))
+cat("✓ FIM delta reference saved: data/processed/fim_delta_reference.csv\n")
+
+# Save metadata
+cleaning_summary <- tibble(
+  step = c("Raw observations", 
+           "After FIM_change merge", 
+           "After removing high missingness",
+           "Final features"),
+  count = c(nrow(ndsc1), 
+            nrow(df_full), 
+            nrow(df_filtered),
+            ncol(df_filtered) - 1)  # Exclude Mod1Id
+)
+write_csv(cleaning_summary, here("output", "tables", "cleaning_summary.csv"))
+cat("✓ Cleaning summary saved: output/tables/cleaning_summary.csv\n")
+
+# ============================================================================
+# FINAL SUMMARY
+# ============================================================================
+cat("\n============================================\n")
+cat("DATA CLEANING COMPLETE\n")
+cat("============================================\n")
+cat("Final dataset dimensions:", nrow(df_filtered), "rows ×", ncol(df_filtered), "columns\n")
+cat("Features ready for modeling:", ncol(df_filtered) - 2, "(excluding Mod1Id and FIM_change)\n")
+cat("\nOutput files:\n")
+cat("  • data/processed/cleaned_data_for_modeling.csv\n")
+cat("  • data/processed/fim_delta_reference.csv\n")
+cat("  • output/tables/missing_data_report.csv\n")
+cat("  • output/tables/cleaning_summary.csv\n")
+cat("  • output/figures/01_fim_change_histogram.png\n")
+cat("  • output/figures/02_fim_change_qqplot.png\n")
+cat("  • output/figures/03_fim_change_scatter.png\n")
+cat("============================================\n\n")
+
+# Loop over all columns and print unique values
+for (col in colnames(df_filtered)) {
+  cat("\nUnique values in", col, ":\n")
+  print(sort(unique(df_filtered[[col]])))
+}
+
+
