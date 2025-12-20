@@ -2,4 +2,4 @@ step,count
 Raw observations,19976
 After FIM_change merge,13704
 After removing high missingness,13704
-Final features,142
+Final features,136
