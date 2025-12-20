@@ -275,7 +275,7 @@ cat("  Valid range enforced: 1-7\n\n")
 # ============================================================================
 cat("STEP 8: Removing additional leakage variables...\n")
 
-leakage_vars <- c("DRSdLow", "DRSdHigh", "DAYStoACUTEdc", "DAYStoREHABdc")
+leakage_vars <- c("DRSdLow", "DRSdHigh", "DAYStoACUTEdc", "DAYStoREHABdc", "LivWhoDis", "ResDis", "YearsinUSFUPF", "MILServeF", "RURALdc" )
 leakage_vars_existing <- leakage_vars[leakage_vars %in% names(df_full)]
 
 if (length(leakage_vars_existing) > 0) {
@@ -318,7 +318,7 @@ write_csv(missing_report, here("output", "tables", "missing_data_report.csv"))
 cat("✓ Missing data report saved to output/tables/missing_data_report.csv\n\n")
 
 # ============================================================================
-# STEP 10: Drop High-Missingness Variables
+# STEP 10: Drop High-Missingness Variables and ZipInj
 # ============================================================================
 # Remove variables with >60% missing data as they provide limited information
 # ============================================================================
@@ -330,6 +330,8 @@ vars_to_drop <- missing_report %>%
 
 df_filtered <- df_full %>%
   select(-any_of(vars_to_drop))
+df_filtered <- df_filtered %>%
+  select(-ZipInj)
 
 cat("  Dropped", length(vars_to_drop), "variables with >60% missing\n")
 cat("  Remaining columns:", ncol(df_filtered), "\n\n")
