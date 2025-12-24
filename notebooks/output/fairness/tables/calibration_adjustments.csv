@@ -1,0 +1,9 @@
+Variable,Category,Bias_Correction
+AgeGroup,<30,0.05628990348317552
+AgeGroup,30-50,0.6851855317629074
+AgeGroup,50+,-1.4188871810278916
+Employment,Employed,-0.0961169866466585
+Employment,Other,0.5825056751169752
+Employment,Retired,-2.749286114127486
+Employment,Student,-0.27122064322641454
+Employment,Unemployed,1.0055995361199455
