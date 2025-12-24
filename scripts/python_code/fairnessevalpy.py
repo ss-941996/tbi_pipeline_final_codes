@@ -187,3 +187,53 @@ for grp_name, grp_col in subgroups.items():
 
     else:
         print(f"{grp_name}: Not enough categories to test.")
+# ====================================================
+# 7. best model parms
+# ====================================================
+
+
+best_model_path = r"C:\Users\saumy\OneDrive\Desktop\tbi_pipeline_final_codes\notebooks\output\models\best_model_final.pkl"
+best_model_instance = joblib.load(best_model_path)
+params = best_model_instance.get_params()
+for k, v in params.items():
+    print(f"{k}: {v}")
+# ====================================================
+# 7. caliberated and non caliberated model perf comparisons 
+# ====================================================
+
+
+from sklearn.utils import resample
+
+# Original and calibrated predictions
+y_true = y.to_numpy()
+y_pred_orig = df['y_pred_original'].to_numpy()
+y_pred_cal  = df['y_pred_calibrated'].to_numpy()
+
+# Bootstrap parameters
+B = 5000
+mae_diffs, r2_diffs = [], []
+
+for _ in range(B):
+    # Resample indices with replacement
+    idx = resample(np.arange(len(y_true)), replace=True)
+    y_boot = y_true[idx]
+    y_orig_boot = y_pred_orig[idx]
+    y_cal_boot  = y_pred_cal[idx]
+    
+    # Compute metrics
+    mae_orig = mean_absolute_error(y_boot, y_orig_boot)
+    mae_cal  = mean_absolute_error(y_boot, y_cal_boot)
+    r2_orig  = r2_score(y_boot, y_orig_boot)
+    r2_cal   = r2_score(y_boot, y_cal_boot)
+    
+    # Store differences (calibrated - original)
+    mae_diffs.append(mae_cal - mae_orig)
+    r2_diffs.append(r2_cal - r2_orig)
+
+# Confidence intervals
+mae_ci = (np.percentile(mae_diffs, 2.5), np.percentile(mae_diffs, 97.5))
+r2_ci  = (np.percentile(r2_diffs, 2.5), np.percentile(r2_diffs, 97.5))
+
+print("Bootstrap CI for MAE difference (Cal - Orig):", mae_ci)
+print("Bootstrap CI for R² difference (Cal - Orig):", r2_ci)
+

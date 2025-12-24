@@ -1,18 +1,25 @@
-# 01_modeling_pipeline_comprehensive.py
-# ============================================================================
-# Purpose: Complete modeling pipeline for TBI functional outcome prediction
-# - Load cleaned data from R preprocessing
-# - Train 6 models with nested CV and Optuna hyperparameter tuning
-# - Perform comprehensive feature importance analysis (PI, Built-in, SHAP)
-# - Statistical comparison with bootstrapped confidence intervals
-# - Save all results and visualizations
-#
-# Author: saumya sharma
-# Date: 17-11-2025
-# Input: data/processed/cleaned_data_for_modeling.csv
-# Output: Models, metrics, importance scores, and visualizations
-# ============================================================================
+"""
+============================================================================
+01_modeling_pipeline_comprehensive.py
+============================================================================
+Purpose: Complete modeling pipeline for TBI functional outcome prediction
+- Load cleaned data from R preprocessing
+- Train 6 models with nested CV and Optuna hyperparameter tuning
+- Perform comprehensive feature importance analysis (PI, Built-in, SHAP)
+- Statistical comparison with bootstrapped confidence intervals
+- Save all results and visualizations
 
+Author: saumya sharma
+Date: 17-11-2025
+Input: data/processed/cleaned_data_for_modeling.csv
+Output: Models, metrics, importance scores, and visualizations
+============================================================================
+"""
+
+# ============================================================================
+# 0. INITIAL SETUP
+# ============================================================================
+#libraries
 # ============================================================================
 # 0. INITIAL SETUP
 # ============================================================================
@@ -25,6 +32,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 
+# Scikit-learn
 from sklearn.model_selection import train_test_split, KFold, cross_val_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
@@ -35,17 +43,25 @@ from sklearn.ensemble import StackingRegressor, HistGradientBoostingRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.inspection import permutation_importance
 
+# Tree-based models
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 
+# Hyperparameter optimization
 import optuna
+
+# SHAP for interpretability
 import shap
+
+# Scipy for statistical tests
 from scipy.stats import spearmanr
 
+# Suppress warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+# Set random seed for reproducibility
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
 
@@ -65,9 +81,11 @@ print("\n" + "="*80)
 print("STEP 1: Loading Cleaned Data")
 print("="*80)
 
+# Load data from R preprocessing output
 df = pd.read_csv("../data/processed/df17nov.csv")
 print(f"Loaded dataset: {df.shape[0]} rows × {df.shape[1]} columns")
 
+# Separate features and target
 X_full = df.drop(columns=['Mod1Id', 'FIM_change'])
 y_full = df['FIM_change']
 
@@ -90,18 +108,20 @@ print(f"Training Set (NCV): {X_NCV.shape[0]} samples")
 print(f"Test Set (Holdout): {X_FINAL_TEST.shape[0]} samples")
 
 # ============================================================================
-# 3. DEFINE MODELS
+# 3. DEFINE MODELS AND HYPERPARAMETER SPACES
 # ============================================================================
 print("\n" + "="*80)
 print("STEP 3: Model Definitions")
 print("="*80)
 
+# Define base models
 MODEL_DEFINITIONS = {
     'MeanPredictor': DummyRegressor(strategy='mean'),
     'HuberRegressor': HuberRegressor(max_iter=200),
     'XGBRegressor': XGBRegressor(random_state=RANDOM_SEED, n_jobs=-1, verbosity=0),
     'LGBMRegressor': LGBMRegressor(random_state=RANDOM_SEED, n_jobs=-1, verbosity=-1),
     'HistGBMRegressor': HistGradientBoostingRegressor(random_state=RANDOM_SEED),
+    
 }
 
 print("Models to train:")
@@ -111,22 +131,33 @@ for i, model_name in enumerate(MODEL_DEFINITIONS.keys(), 1):
 # ============================================================================
 # 4. OPTUNA OBJECTIVE FUNCTIONS
 # ============================================================================
+
 def objective_huber(trial, X_train, y_train, inner_cv):
+    """Hyperparameter optimization for HuberRegressor"""
     params = {
         'alpha': trial.suggest_float('alpha', 0.0, 1.0),
         'epsilon': trial.suggest_float('epsilon', 1.0, 2.0),
         'max_iter': 1000
     }
+    
+    # Create pipeline with imputation and scaling
     pipeline = Pipeline([
         ('imputer', SimpleImputer(strategy='mean')),
         ('scaler', StandardScaler()),
         ('huber', HuberRegressor(**params))
     ])
-    scores = cross_val_score(pipeline, X_train, y_train,
-                             scoring='neg_mean_squared_error', cv=inner_cv, n_jobs=1)
+    
+    scores = cross_val_score(
+        pipeline, X_train, y_train, 
+        scoring='neg_mean_squared_error', 
+        cv=inner_cv, 
+        n_jobs=1
+    )
     return -np.mean(scores)
 
+
 def objective_xgb(trial, X_train, y_train, inner_cv):
+    """Hyperparameter optimization for XGBoost"""
     params = {
         'n_estimators': trial.suggest_int('n_estimators', 100, 800),
         'max_depth': trial.suggest_int('max_depth', 3, 12),
@@ -136,16 +167,24 @@ def objective_xgb(trial, X_train, y_train, inner_cv):
         'random_state': RANDOM_SEED,
         'verbosity': 0
     }
+    
+    # Create pipeline
     pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy='mean')),
-        ('scaler', StandardScaler()),
+        
         ('xgb', XGBRegressor(**params, n_jobs=1))
     ])
-    scores = cross_val_score(pipeline, X_train, y_train,
-                             scoring='neg_mean_squared_error', cv=inner_cv, n_jobs=1)
+    
+    scores = cross_val_score(
+        pipeline, X_train, y_train,
+        scoring='neg_mean_squared_error',
+        cv=inner_cv,
+        n_jobs=1
+    )
     return -np.mean(scores)
 
+
 def objective_lgbm(trial, X_train, y_train, inner_cv):
+    """Hyperparameter optimization for LightGBM"""
     params = {
         'n_estimators': trial.suggest_int('n_estimators', 100, 800),
         'max_depth': trial.suggest_int('max_depth', 3, 12),
@@ -154,35 +193,53 @@ def objective_lgbm(trial, X_train, y_train, inner_cv):
         'random_state': RANDOM_SEED,
         'verbosity': -1
     }
+    
     pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy='mean')),
-        ('scaler', StandardScaler()),
+        
         ('lgbm', LGBMRegressor(**params, n_jobs=1))
     ])
-    scores = cross_val_score(pipeline, X_train, y_train,
-                             scoring='neg_mean_squared_error', cv=inner_cv, n_jobs=1)
+    
+    scores = cross_val_score(
+        pipeline, X_train, y_train,
+        scoring='neg_mean_squared_error',
+        cv=inner_cv,
+        n_jobs=1
+    )
     return -np.mean(scores)
 
+
 def objective_histgbm(trial, X_train, y_train, inner_cv):
+    """Hyperparameter optimization for HistGradientBoosting"""
     params = {
         'max_iter': trial.suggest_int('max_iter', 100, 800),
         'max_depth': trial.suggest_int('max_depth', 3, 12),
         'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2, log=True),
         'random_state': RANDOM_SEED
     }
+    
     pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy='mean')),
+        
         ('histgbm', HistGradientBoostingRegressor(**params))
     ])
-    scores = cross_val_score(pipeline, X_train, y_train,
-                             scoring='neg_mean_squared_error', cv=inner_cv, n_jobs=1)
+    
+    scores = cross_val_score(
+        pipeline, X_train, y_train,
+        scoring='neg_mean_squared_error',
+        cv=inner_cv,
+        n_jobs=1
+    )
     return -np.mean(scores)
 
+
+
+
+# Map model names to objective functions
 OBJECTIVE_MAP = {
     'HuberRegressor': objective_huber,
     'XGBRegressor': objective_xgb,
     'LGBMRegressor': objective_lgbm,
     'HistGBMRegressor': objective_histgbm,
+    
 }
 
 # ============================================================================
@@ -255,21 +312,19 @@ for model_name, base_model in MODEL_DEFINITIONS.items():
             
             elif model_name == 'XGBRegressor':
                 pipeline = Pipeline([
-                    ('imputer', SimpleImputer(strategy='mean')),
-                    ('scaler', StandardScaler()),
+                    
                     ('xgb', XGBRegressor(**best_params, random_state=RANDOM_SEED, n_jobs=-1, verbosity=0))
                 ])
             
             elif model_name == 'LGBMRegressor':
                 pipeline = Pipeline([
-                    ('imputer', SimpleImputer(strategy='mean')),
-                    ('scaler', StandardScaler()),
+                    
                     ('lgbm', LGBMRegressor(**best_params, random_state=RANDOM_SEED, n_jobs=-1, verbosity=-1))
                 ])
             
             elif model_name == 'HistGBMRegressor':
                 pipeline = Pipeline([
-                    ('imputer', SimpleImputer(strategy='mean')),
+                    
                     ('histgbm', HistGradientBoostingRegressor(**best_params, random_state=RANDOM_SEED))
                 ])
             
@@ -337,19 +392,17 @@ for model_name, base_model in MODEL_DEFINITIONS.items():
         ])
     elif model_name == 'XGBRegressor':
         final_pipeline = Pipeline([
-            ('imputer', SimpleImputer(strategy='mean')),
-            ('scaler', StandardScaler()),
+            
             ('xgb', XGBRegressor(**best_fold_params, random_state=RANDOM_SEED, n_jobs=-1, verbosity=0))
         ])
     elif model_name == 'LGBMRegressor':
         final_pipeline = Pipeline([
-            ('imputer', SimpleImputer(strategy='mean')),
-            ('scaler', StandardScaler()),
+            
             ('lgbm', LGBMRegressor(**best_fold_params, random_state=RANDOM_SEED, n_jobs=-1, verbosity=-1))
         ])
     elif model_name == 'HistGBMRegressor':
         final_pipeline = Pipeline([
-            ('imputer', SimpleImputer(strategy='mean')),
+            
             ('histgbm', HistGradientBoostingRegressor(**best_fold_params, random_state=RANDOM_SEED))
         ])
     
@@ -674,7 +727,7 @@ DOMAIN_MAPPING = {
     'Injury_Severity': ['GCS', 'PTA', 'TFC', 'LOC', 'INJURY'],
     'Functional_Baseline': ['FIM', 'DRS', 'MOTOR', 'COGN'],
     'Medical_History': ['DIABETES', 'HYPERTENSION', 'CARDIAC', 'NEURO'],
-    'Treatment': ['LOS', 'REHAB', 'THERAPY', 'INTERVENTION'],
+    'Temporal': ['LOS', 'REHAB', 'THERAPY', 'INTERVENTION'],
     'Other': []  # Catch-all for features not matching above
 }
 
@@ -848,7 +901,8 @@ if importance_results['shap_values'] is not None:
         show=False,
         max_display=20
     )
-    plt.title(f'SHAP Feature Importance ({best_model_name})', fontsize=14, pad=20)
+    plt.gca().set_xlabel("Mean Absolute SHAP Value (Average Impact on Prediction)", fontsize=12)
+    plt.title(f'SHAP Feature Importance', fontsize=14, pad=20)
     plt.tight_layout()
     plt.savefig("output/figures/shap_importance_bar.png", dpi=300, bbox_inches='tight')
     plt.close()
