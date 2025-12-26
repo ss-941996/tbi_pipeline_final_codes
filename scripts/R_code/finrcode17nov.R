@@ -12,7 +12,7 @@
 # Author: Saumya Sharma
 # Date: 17-11-2025
 # Input: Raw TBIMS CSV files (Form 1 & Form 2)
-# Output: cleaned_data_for_modeling.csv
+
 # ============================================================================
 
 library(tidyverse)
@@ -82,40 +82,29 @@ dir.create(here("output", "figures"), showWarnings = FALSE, recursive = TRUE)
 hist_plot <- ggplot(fim_change_clean, aes(x = FIM_change)) +
   geom_histogram(bins = 40, fill = "skyblue", color = "black") +
   geom_vline(aes(xintercept = mean(FIM_change)), color = "red", linetype = "dashed", linewidth = 1) +
-  labs(
-    title = "Distribution of FIM Change (Post-Discharge to 1-Year)",
-    x = "FIM Change (FIMTOTF - FIMTOTD)", 
-    y = "Count"
-  ) +
-  theme_classic()  # clean white background
-
-ggsave(here("output", "figures", "01_fim_change_histogram.png"), hist_plot, width = 8, height = 6)
+  labs(title = "Distribution of ΔFIM  ",
+       x = "ΔFIM (FIMTOTF₍1-year₎ - FIMTOTD)", 
+       y = "Count") +
+  theme_minimal()
+ggsave(here("output", "figures", "fim_change_histogram.png"), hist_plot, width = 8, height = 6)
 
 # QQ Plot
 qq_plot <- ggplot(fim_change_clean, aes(sample = FIM_change)) +
   stat_qq() +
   stat_qq_line(color = "red", linewidth = 1) +
-  labs(title = "Q-Q Plot of FIM Change") +
-  theme_minimal()+  theme(
-    panel.background = element_rect(fill = "white", color = "black"),
-    plot.background = element_rect(fill = "white", color = NA)
-  )
-ggsave(here("output", "figures", "02_fim_change_qqplot.png"), qq_plot, width = 8, height = 6)
+  labs(title = "Q-Q Plot of ΔFIM") +
+  theme_minimal()
+ggsave(here("output", "figures", "fim_change_qqplot.png"), qq_plot, width = 8, height = 6)
 
 # Scatter plot for homoscedasticity check
 scatter_plot <- ggplot(fim_change_clean, aes(x = FIMTOTD, y = FIM_change)) +
   geom_point(alpha = 0.5, color = "black") +
   geom_smooth(method = "lm", color = "red", se = FALSE) +
-  labs(title = "FIM Change vs. FIM at Discharge (Variance Check)",
-       x = "FIM at Discharge (FIMTOTD)",
-       y = "FIM Change") +
-  theme_minimal(base_family = "Arial") +
-  theme(
-    panel.background = element_rect(fill = "white", color = "black"),
-    plot.background = element_rect(fill = "white", color = NA)
-  )
-
-ggsave(here("output", "figures", "03_fim_change_scatter.png"), scatter_plot, width = 8, height = 6)
+  labs(title = "ΔFIM vs. FIM at Discharge (FIMTOTD) (Variance Check)",
+       x = "FIMTOTD",
+       y = "ΔFIM") +
+  theme_minimal()
+ggsave(here("output", "figures", "fim_change_scatter.png"), scatter_plot, width = 8, height = 6)
 
 # Skewness and Kurtosis
 cat("  Normality checks:\n")
@@ -200,7 +189,7 @@ cat("  Merged dataset:", nrow(df_full), "rows ×", ncol(df_full), "columns\n\n")
 # Additional cleaning for specific variables that have unique missing codes
 # ============================================================================
 cat("STEP 6: Cleaning missing value codes (Phase 2 - Specific variables)...\n")
-gcs_vars <- names(df_full)[startsWith(names(df_full), "GCS")]
+
 df_full <- df_full %>%
   mutate(
     # FIM aggregate scores
@@ -214,18 +203,14 @@ df_full <- df_full %>%
     LOSRehab = ifelse(LOSRehab %in% c(888, 999), NA, LOSRehab),
     LOSRehabNoInt = ifelse(LOSRehabNoInt %in% c(888, 999), NA, LOSRehabNoInt),
     LOSTot = ifelse(LOSTot %in% c(888, 999), NA, LOSTot),
-    
     DAYStoREHABadm = ifelse(DAYStoREHABadm %in% c(8888, 9999), NA, DAYStoREHABadm),
     DAYStoACUTEadm = ifelse(DAYStoACUTEadm %in% c(8888, 9999), NA, DAYStoACUTEadm),
-    
     LOSAcute = ifelse(LOSAcute %in% c(888, 999), NA, LOSAcute),
     
     # Demographics
     AGENoPHI = ifelse(AGENoPHI %in% c(777, 889, 999), NA, AGENoPHI),
-    
-  )%>%
-  # Clean all GCS variables in one go
-  mutate(across(all_of(gcs_vars), ~ ifelse(.x %in% c(77, 88, 999, 888, 88888), NA, .x)))
+    GCSTot = ifelse(GCSTot %in% c(77, 88, 999), NA, GCSTot)
+  )
 
 cat("  Variable-specific missing codes converted to NA\n\n")
 
@@ -275,7 +260,7 @@ cat("  Valid range enforced: 1-7\n\n")
 # ============================================================================
 cat("STEP 8: Removing additional leakage variables...\n")
 
-leakage_vars <- c("DRSdLow", "DRSdHigh", "DAYStoACUTEdc", "DAYStoREHABdc", "LivWhoDis", "ResDis", "YearsinUSFUPF", "MILServeF", "RURALdc" )
+leakage_vars <- c("DRSdLow", "DRSdHigh")
 leakage_vars_existing <- leakage_vars[leakage_vars %in% names(df_full)]
 
 if (length(leakage_vars_existing) > 0) {
@@ -318,7 +303,7 @@ write_csv(missing_report, here("output", "tables", "missing_data_report.csv"))
 cat("✓ Missing data report saved to output/tables/missing_data_report.csv\n\n")
 
 # ============================================================================
-# STEP 10: Drop High-Missingness Variables and ZipInj
+# STEP 10: Drop High-Missingness Variables
 # ============================================================================
 # Remove variables with >60% missing data as they provide limited information
 # ============================================================================
@@ -330,11 +315,34 @@ vars_to_drop <- missing_report %>%
 
 df_filtered <- df_full %>%
   select(-any_of(vars_to_drop))
-df_filtered <- df_filtered %>%
-  select(-ZipInj)
 
 cat("  Dropped", length(vars_to_drop), "variables with >60% missing\n")
 cat("  Remaining columns:", ncol(df_filtered), "\n\n")
+
+# ============================================================================
+# STEP 10.5: Remove additional unwanted variables (Saumya's list)
+# ============================================================================
+
+extra_unwanted <- c(
+  "LivWhoDis",
+  "ResDis",
+  "YearsinUSFUPF",
+  "ZipInj",
+  "MILServeF",
+  "DAYStoACUTEdc",
+  "DAYStoREHABdc",
+  "RURALdc",
+  "DeathCause1",
+  "DeathCause2",
+  "DeathECode"
+)
+
+df_filtered <- df_filtered %>% select(-any_of(extra_unwanted))
+
+cat("  Removed additional unwanted variables:\n    ",
+    paste(extra_unwanted, collapse = ", "), "\n\n")
+
+
 
 # ============================================================================
 # STEP 11: Save Final Datasets
@@ -345,8 +353,9 @@ cat("STEP 11: Saving final datasets...\n")
 dir.create(here("data", "processed"), showWarnings = FALSE, recursive = TRUE)
 
 # Save cleaned dataset for Python modeling
-write_csv(df_filtered, here("data", "processed", "df17nov.csv"))
-cat("✓ Cleaned dataset saved: data/processed/df17nov.csv\n")
+write_csv(df_filtered, here("data", "processed", "df17Nov.csv"))
+cat("✓ Final dataset saved: data/processed/df17Nov.csv\n")
+
 
 # Save FIM delta reference (useful for analysis)
 write_csv(fim_delta, here("data", "processed", "fim_delta_reference.csv"))
@@ -375,7 +384,7 @@ cat("============================================\n")
 cat("Final dataset dimensions:", nrow(df_filtered), "rows ×", ncol(df_filtered), "columns\n")
 cat("Features ready for modeling:", ncol(df_filtered) - 2, "(excluding Mod1Id and FIM_change)\n")
 cat("\nOutput files:\n")
-cat("  • data/processed/cleaned_data_for_modeling.csv\n")
+cat("  • data/processed/df17nov.csv\n")
 cat("  • data/processed/fim_delta_reference.csv\n")
 cat("  • output/tables/missing_data_report.csv\n")
 cat("  • output/tables/cleaning_summary.csv\n")
@@ -384,10 +393,7 @@ cat("  • output/figures/02_fim_change_qqplot.png\n")
 cat("  • output/figures/03_fim_change_scatter.png\n")
 cat("============================================\n\n")
 
-# Loop over all columns and print unique values
-for (col in colnames(df_filtered)) {
-  cat("\nUnique values in", col, ":\n")
-  print(sort(unique(df_filtered[[col]])))
-}
 
 
+
+colnames(df_filtered)
